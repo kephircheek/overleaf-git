@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import json
-import shutil
-import sys
-import tempfile
-import zipfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -51,83 +47,39 @@ class OverleafClient:
             "Referer": self.referer,
         }
 
-    def get(self, url: str) -> Any:
+    def get_json(self, url: str) -> Any:
         """Safe GET request with JSON parsing."""
-        req = Request(url, headers=self.headers)
-        try:
-            with urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except HTTPError as e:
-            print(f"  [ERROR] HTTP {e.code} for {url}", file=sys.stderr)
-            raise
+        request = Request(url, headers=self.headers)
+        with urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
 
     def updates(self, pid: str, min_count: int = 1000) -> list[dict[str, Any]]:
         """Fetch all project updates metadata."""
         url = f"https://www.overleaf.com/project/{pid}/updates?min_count={min_count}"
-        data = self.get(url)
+        data = self.get_json(url)
         updates: list[dict[str, Any]] = data.get("updates", [])
         updates.sort(key=lambda u: u["fromV"])
         return updates
 
-    def diff(self, pid: str, from_v: int, to_v: int, pathname: str) -> list[dict[str, Any]] | None:
+    def diff(self, pid: str, from_v: int, to_v: int, pathname: str) -> list[dict[str, Any]]:
         """Fetch text diff for a specific file between two versions."""
         url = (
             f"https://www.overleaf.com/project/{pid}/diff"
             f"?from={from_v}&to={to_v}&pathname={quote(pathname)}"
         )
-        try:
-            data = self.get(url)
-            diff: list[dict[str, Any]] = data.get("diff")
-            return diff
-        except Exception:
-            return None
+        data = self.get_json(url)
+        diff: list[dict[str, Any]] = data.get("diff")
+        return diff
 
-    def download(
-        self, pid: str, dest: Path | str, version: int | None = None
-    ) -> list[dict[str, Any]] | None:
+    def download(self, pid: str, dest: Path | str, version: int | None = None) -> int:
         """Download project version as zip and extract to path with overwrite."""
         version_ = f"/version/{version}" if version else ""
         url = f"https://www.overleaf.com/project/{pid}{version_}/zip"
         request = Request(url, headers=self.headers)
-        try:
-            response = urlopen(request, timeout=120)
-        except HTTPError as exc:
-            print(f"[ERROR] Failed to download version {version}: HTTP {exc.code}")
-            return None
-
-        dest = Path(dest).resolve()
-        tmp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
+        path = Path(dest).resolve() / f"{version or time.time_ns()}.zip"
+        with urlopen(request, timeout=120) as response:
+            total = 0
+            with path.open("wb") as f:
                 while chunk := response.read(DEFAULT_CHUNK_SIZE):
-                    tmp.write(chunk)
-
-            extracted_files: list[dict[str, Any]] = []
-            with zipfile.ZipFile(tmp_path, "r") as zf:
-                for info in zf.infolist():
-                    if info.is_dir():
-                        continue
-
-                    target = dest / info.filename
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(info) as src, open(target, "wb") as dst:
-                        shutil.copyfileobj(src, dst, length=DEFAULT_CHUNK_SIZE)
-
-                    extracted_files.append(
-                        {
-                            "filename": info.filename,
-                            "size": info.file_size,
-                            "date_time": info.date_time,
-                        }
-                    )
-
-            return extracted_files
-
-        except (zipfile.BadZipFile, OSError) as exc:
-            print(f"[ERROR] Extraction failed: {exc}")
-            return None
-
-        finally:
-            if tmp_path is not None and tmp_path.exists():
-                tmp_path.unlink(missing_ok=True)
+                    total += f.write(chunk)
+        return total
