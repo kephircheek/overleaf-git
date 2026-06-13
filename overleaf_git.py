@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -72,11 +71,13 @@ class OverleafClient:
         return diff
 
     def download(self, pid: str, dest: Path | str, version: int | None = None) -> int:
-        """Download project version as zip and extract to path with overwrite."""
+        """Download project version as zip."""
+        path = Path(dest).resolve() / f"{version or pid}.zip"
+        if version and path.exists():
+            raise FileExistsError(path)
         version_ = f"/version/{version}" if version else ""
         url = f"https://www.overleaf.com/project/{pid}{version_}/zip"
         request = Request(url, headers=self.headers)
-        path = Path(dest).resolve() / f"{version or time.time_ns()}.zip"
         with urlopen(request, timeout=120) as response:
             total = 0
             with path.open("wb") as f:
